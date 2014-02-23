@@ -320,7 +320,7 @@ class process
             return WEXITSTATUS(status_);
         waitpid(pid_, &status_, 0);
         if (!WIFEXITED(status_))
-            throw pipe_t::exception{"Failed to wait for child"};
+            throw exception{"Failed to wait for child"};
         exited_ = true;
         return WEXITSTATUS(status_);
     }

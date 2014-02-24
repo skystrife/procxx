@@ -14,6 +14,15 @@ process cat{"cat"};
 // created process, running `wc -c`
 process wc{cat, "wc", "-c"};
 
+// execute the cat process
+cat.exec();
+
+// execute the `wc -c` process, placing a limit on how much memory it may
+// use
+process::limits_t limits;
+limits.memory(1024*1024*1); // 1 MB
+wc.exec(limits);
+
 // write "hello world" to the standard input of the cat child process
 cat.write("hello world", 11);
 

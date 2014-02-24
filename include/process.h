@@ -11,12 +11,15 @@
 #define _PROCESS_H_
 
 #include <errno.h>
+#include <sys/resource.h>
+#include <sys/time.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
 #include <array>
 #include <cstdio>
 #include <stdexcept>
+#include <vector>
 
 /**
  * Represents a UNIX pipe between processes.
@@ -221,28 +224,10 @@ class process
      */
     template <class... Args>
     process(const char* application, Args&&... args)
+        : args_{const_cast<char*>(application), const_cast<char*>(args)...,
+                nullptr}
     {
-        auto pid = fork();
-        if (pid == -1)
-        {
-            perror("fork()");
-            throw exception{"Failed to fork child process"};
-        }
-        else if (pid == 0)
-        {
-            stdin_.close(pipe_t::write_end());
-            stdout_.close(pipe_t::read_end());
-            stdin_.dup(pipe_t::read_end(), STDIN_FILENO);
-            stdout_.dup(pipe_t::write_end(), STDOUT_FILENO);
-            execlp(application, application, args..., nullptr);
-            throw exception{"Failed to execute child process"};
-        }
-        else
-        {
-            stdout_.close(pipe_t::write_end());
-            stdin_.close(pipe_t::read_end());
-            pid_ = pid;
-        }
+        // nothing
     }
 
     /**
@@ -251,43 +236,77 @@ class process
      */
     template <class... Args>
     process(process& read_from, const char* application, Args&&... args)
+        : read_from_{&read_from},
+          args_{const_cast<char*>(application), const_cast<char*>(args)...,
+                nullptr}
     {
-        read_from_ = &read_from;
-        auto pid = fork();
-        if (pid == -1)
+        // nothing
+    }
+
+    /**
+     * Executes the process.
+     */
+    void exec()
+    {
+        exec([]() { });
+    }
+
+    /**
+     * Simple wrapper for process limit settings. Currently supports
+     * setting processing time and memory usage limits.
+     */
+    class limits_t
+    {
+      public:
+        /**
+         * Sets the maximum amount of cpu time, in seconds.
+         */
+        void cpu_time(rlim_t max)
         {
-            perror("fork()");
-            throw exception{"Failed to fork child process"};
+            lim_cpu_ = true;
+            cpu_.rlim_cur = cpu_.rlim_max = max;
         }
-        else if (pid == 0)
+
+        /**
+         * Sets the maximum allowed memory usage, in bytes.
+         */
+        void memory(rlim_t max)
         {
-            read_from.stdin_.close(pipe_t::write_end());
-
-            // we don't need the stdin pipe anymore, as we are reading from
-            // the given process
-            stdin_.close();
-
-            stdout_.close(pipe_t::read_end());
-
-            // we aren't reading or writing to the stdin of any previous
-            // process in the pipeline
-            read_from.recursive_close_stdin();
-
-            // we will read from the stdout of the previous process in the
-            // pipeline
-            read_from.stdout_.dup(pipe_t::read_end(), STDIN_FILENO);
-
-            stdout_.dup(pipe_t::write_end(), STDOUT_FILENO);
-            execlp(application, application, args..., nullptr);
-            throw exception{"Failed to execute child process"};
+            lim_as_ = true;
+            as_.rlim_cur = as_.rlim_max = max;
         }
-        else
+
+        /**
+         * Applies the set limits to the current process.
+         */
+        void set_limits()
         {
-            stdin_.close();
-            stdout_.close(pipe_t::write_end());
-            read_from.stdout_.close(pipe_t::read_end());
-            pid_ = pid;
+            if (lim_cpu_ && setrlimit(RLIMIT_CPU, &cpu_) != 0)
+            {
+                perror("limits_t::set_limits()");
+                throw exception{"Failed to set cpu time limit"};
+            }
+
+            if (lim_as_ && setrlimit(RLIMIT_AS, &as_) != 0)
+            {
+                perror("limits_t::set_limits()");
+                throw exception{"Failed to set memory limit"};
+            }
         }
+      private:
+        bool lim_cpu_ = false;
+        rlimit cpu_;
+        bool lim_as_ = false;
+        rlimit as_;
+    };
+
+    /**
+     * Executes the process, but sets limits on the resource utilization
+     * of the child.
+     */
+    void exec(limits_t limits)
+    {
+        exec([&]() { limits.set_limits(); });
     }
 
     /**
@@ -408,6 +427,49 @@ class process
     };
 
   private:
+    template <class PreExec>
+    void exec(PreExec&& preexec)
+    {
+        auto pid = fork();
+        if (pid == -1)
+        {
+            perror("fork()");
+            throw exception{"Failed to fork child process"};
+        }
+        else if (pid == 0)
+        {
+            stdin_.close(pipe_t::write_end());
+            stdout_.close(pipe_t::read_end());
+            stdout_.dup(pipe_t::write_end(), STDOUT_FILENO);
+
+            if (read_from_)
+            {
+                read_from_->recursive_close_stdin();
+                stdin_.close(pipe_t::read_end());
+                read_from_->stdout_.dup(pipe_t::read_end(), STDIN_FILENO);
+            }
+            else
+            {
+                stdin_.dup(pipe_t::read_end(), STDIN_FILENO);
+            }
+
+            preexec();
+            execvp(args_[0], args_.data());
+            throw exception{"Failed to execute child process"};
+        }
+        else
+        {
+            stdout_.close(pipe_t::write_end());
+            stdin_.close(pipe_t::read_end());
+            if (read_from_)
+            {
+                stdin_.close(pipe_t::write_end());
+                read_from_->stdout_.close(pipe_t::read_end());
+            }
+            pid_ = pid;
+        }
+    }
+
     void recursive_close_stdin()
     {
         stdin_.close();
@@ -416,6 +478,7 @@ class process
     }
 
     process* read_from_ = nullptr;
+    std::vector<char*> args_;
     pid_t pid_;
     pipe_t stdin_;
     pipe_t stdout_;

@@ -311,18 +311,57 @@ class process
 
     /**
      * Waits for the child to exit.
-     *
-     * @return the exit code for the process
      */
-    int wait()
+    void wait()
     {
-        if (exited_)
+        if (!waited_)
+        {
+            waitpid(pid_, &status_, 0);
+            waited_ = true;
+        }
+    }
+
+    /**
+     * Determines if the child exited properly.
+     */
+    bool exited() const
+    {
+        if (!waited_) throw exception{"process::wait() not yet called"};
+        return WIFEXITED(status_);
+    }
+
+    /**
+     * Determines if the child was killed.
+     */
+    bool killed() const
+    {
+        if (!waited_) throw exception{"process::wait() not yet called"};
+        return WIFSIGNALED(status_);
+    }
+
+    /**
+     * Determines if the child was stopped.
+     */
+    bool stopped() const
+    {
+        if (!waited_) throw exception{"process::wait() not yet called"};
+        return WIFSTOPPED(status_);
+    }
+
+    /**
+     * Gets the exit code for the child. If it was killed or stopped, the
+     * signal that did so is returned instead.
+     */
+    int code() const
+    {
+        if (!waited_) throw exception{"process::wait() not yet called"};
+        if (exited())
             return WEXITSTATUS(status_);
-        waitpid(pid_, &status_, 0);
-        if (!WIFEXITED(status_))
-            throw exception{"Failed to wait for child"};
-        exited_ = true;
-        return WEXITSTATUS(status_);
+        if (killed())
+            return WTERMSIG(status_);
+        if (stopped())
+            return WSTOPSIG(status_);
+        return -1;
     }
 
     /**
@@ -380,8 +419,8 @@ class process
     pid_t pid_;
     pipe_t stdin_;
     pipe_t stdout_;
+    bool waited_ = false;
     int status_;
-    bool exited_ = false;
 };
 
 #endif

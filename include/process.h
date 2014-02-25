@@ -19,6 +19,7 @@
 #include <array>
 #include <cstdio>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 /**
@@ -223,24 +224,19 @@ class process
      * passing the given arguments to it.
      */
     template <class... Args>
-    process(const char* application, Args&&... args)
-        : args_{const_cast<char*>(application), const_cast<char*>(args)...,
-                nullptr}
+    process(std::string&& application, Args&&... args)
+        : args_{std::move(application), std::forward<Args>(args)...}
     {
         // nothing
     }
 
     /**
-     * Pipeline constructor---constructs a new process which will read
-     * from the given process.
+     * Sets the process to read from the standard output of another
+     * process.
      */
-    template <class... Args>
-    process(process& read_from, const char* application, Args&&... args)
-        : read_from_{&read_from},
-          args_{const_cast<char*>(application), const_cast<char*>(args)...,
-                nullptr}
+    void read_from(process& other)
     {
-        // nothing
+        read_from_ = &other;
     }
 
     /**
@@ -248,7 +244,72 @@ class process
      */
     void exec()
     {
-        exec([]() { });
+        if (pid_ != -1)
+            throw exception{"process already started"};
+
+        auto pid = fork();
+        if (pid == -1)
+        {
+            perror("fork()");
+            throw exception{"Failed to fork child process"};
+        }
+        else if (pid == 0)
+        {
+            stdin_.close(pipe_t::write_end());
+            stdout_.close(pipe_t::read_end());
+            stdout_.dup(pipe_t::write_end(), STDOUT_FILENO);
+
+            if (read_from_)
+            {
+                read_from_->recursive_close_stdin();
+                stdin_.close(pipe_t::read_end());
+                read_from_->stdout_.dup(pipe_t::read_end(), STDIN_FILENO);
+            }
+            else
+            {
+                stdin_.dup(pipe_t::read_end(), STDIN_FILENO);
+            }
+
+            std::vector<char*> args;
+            args.reserve(args_.size() + 1);
+            for (auto& arg: args_)
+                args.push_back(const_cast<char*>(arg.c_str()));
+            args.push_back(nullptr);
+
+            limits_.set_limits();
+            execvp(args[0], args.data());
+            throw exception{"Failed to execute child process"};
+        }
+        else
+        {
+            stdout_.close(pipe_t::write_end());
+            stdin_.close(pipe_t::read_end());
+            if (read_from_)
+            {
+                stdin_.close(pipe_t::write_end());
+                read_from_->stdout_.close(pipe_t::read_end());
+            }
+            pid_ = pid;
+        }
+    }
+
+    /**
+     * Process handles may be moved.
+     */
+    process(process&&) = default;
+
+    /**
+     * Process handles are unique: they may not be copied.
+     */
+    process(const process&) = delete;
+
+    /**
+     * The destructor for a process will wait for the child if client code
+     * has not already explicitly waited for it.
+     */
+    ~process()
+    {
+        wait();
     }
 
     /**
@@ -301,31 +362,11 @@ class process
     };
 
     /**
-     * Executes the process, but sets limits on the resource utilization
-     * of the child.
+     * Sets the limits for this process.
      */
-    void exec(limits_t limits)
+    void limit(const limits_t& limits)
     {
-        exec([&]() { limits.set_limits(); });
-    }
-
-    /**
-     * Process handles may be moved.
-     */
-    process(process&&) = default;
-
-    /**
-     * Process handles are unique: they may not be copied.
-     */
-    process(const process&) = delete;
-
-    /**
-     * The destructor for a process will wait for the child if client code
-     * has not already explicitly waited for it.
-     */
-    ~process()
-    {
-        wait();
+        limits_ = limits;
     }
 
     /**
@@ -427,48 +468,6 @@ class process
     };
 
   private:
-    template <class PreExec>
-    void exec(PreExec&& preexec)
-    {
-        auto pid = fork();
-        if (pid == -1)
-        {
-            perror("fork()");
-            throw exception{"Failed to fork child process"};
-        }
-        else if (pid == 0)
-        {
-            stdin_.close(pipe_t::write_end());
-            stdout_.close(pipe_t::read_end());
-            stdout_.dup(pipe_t::write_end(), STDOUT_FILENO);
-
-            if (read_from_)
-            {
-                read_from_->recursive_close_stdin();
-                stdin_.close(pipe_t::read_end());
-                read_from_->stdout_.dup(pipe_t::read_end(), STDIN_FILENO);
-            }
-            else
-            {
-                stdin_.dup(pipe_t::read_end(), STDIN_FILENO);
-            }
-
-            preexec();
-            execvp(args_[0], args_.data());
-            throw exception{"Failed to execute child process"};
-        }
-        else
-        {
-            stdout_.close(pipe_t::write_end());
-            stdin_.close(pipe_t::read_end());
-            if (read_from_)
-            {
-                stdin_.close(pipe_t::write_end());
-                read_from_->stdout_.close(pipe_t::read_end());
-            }
-            pid_ = pid;
-        }
-    }
 
     void recursive_close_stdin()
     {
@@ -477,13 +476,107 @@ class process
             read_from_->recursive_close_stdin();
     }
 
+    std::vector<std::string> args_;
     process* read_from_ = nullptr;
-    std::vector<char*> args_;
-    pid_t pid_;
+    limits_t limits_;
+    pid_t pid_ = -1;
     pipe_t stdin_;
     pipe_t stdout_;
     bool waited_ = false;
     int status_;
 };
+
+/**
+ * Class that represents a pipeline of child processes. The process objects
+ * that are part of the pipeline are assumed to live longer than or as long
+ * as the pipeline itself---the pipeline does not take ownership of the
+ * processes.
+ */
+class pipeline
+{
+  public:
+    friend pipeline operator|(process& first, process& second);
+
+    /**
+     * Constructs a longer pipeline by adding an additional process.
+     */
+    pipeline& operator|(process& tail)
+    {
+        tail.read_from(*processes_.back());
+        processes_.push_back(&tail);
+        return *this;
+    }
+
+    /**
+     * Sets limits on all processes in the pipieline.
+     */
+    pipeline& limit(process::limits_t limits)
+    {
+        for (auto& proc : processes_)
+            proc->limit(limits);
+        return *this;
+    }
+
+    /**
+     * Executes all processes in the pipeline.
+     */
+    void exec() const
+    {
+        for_each([](process& proc) { proc.exec(); });
+    }
+
+    /**
+     * Obtains the process at the head of the pipeline.
+     */
+    process& head() const
+    {
+        return *processes_.front();
+    }
+
+    /**
+     * Obtains the process at the tail of the pipeline.
+     */
+    process& tail() const
+    {
+        return *processes_.back();
+    }
+
+    /**
+     * Waits for all processes in the pipeline to finish.
+     */
+    void wait() const
+    {
+        for_each([](process& proc) { proc.wait(); });
+    }
+
+    /**
+     * Performs an operation on each process in the pipeline.
+     */
+    template <class Function>
+    void for_each(Function&& function) const
+    {
+        for (auto& proc : processes_)
+            function(*proc);
+    }
+
+  private:
+    pipeline(process& head)
+        : processes_{&head}
+    {
+        // nothing
+    }
+
+    std::vector<process*> processes_;
+};
+
+/**
+ * Begins constructing a pipeline from two processes.
+ */
+inline pipeline operator|(process& first, process& second)
+{
+    pipeline p{first};
+    p | second;
+    return std::move(p);
+}
 
 #endif

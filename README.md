@@ -4,24 +4,17 @@ procxx
 A simple process management library for C++ on UNIX platforms.
 
 ## Usage
-Here is a simple (toy) example of setting up a pipeline.
+Here is a simple (toy) example of setting up a very basic pipeline.
 
 ```cpp
 // construct a child process that runs `cat`
 process cat{"cat"};
 
-// construct a child process, reading from the stdout of the previously
-// created process, running `wc -c`
-process wc{cat, "wc", "-c"};
+// construct a child process that runs `wc -c`
+process wc{"wc", "-c"};
 
-// execute the cat process
-cat.exec();
-
-// execute the `wc -c` process, placing a limit on how much memory it may
-// use
-process::limits_t limits;
-limits.memory(1024*1024*1); // 1 MB
-wc.exec(limits);
+// set up the pipeline and execute the child processes
+(cat | wc).exec();
 
 // write "hello world" to the standard input of the cat child process
 cat.write("hello world", 11);
@@ -31,7 +24,35 @@ cat.close(pipe_t::write_end());
 
 // read from the `wc -l` process's stdout
 char buf[101];
-auto bytes = cat.read(buf, 100);
+auto bytes = wc.read(buf, 100);
 buf[bytes] = '\0';
 std::cout << buf;
+```
+
+procxx also provides functionality for setting resource limits on the
+child processes, as demonstrated below. The functionality is implemented
+via the POSIX `rlimit` functions.
+
+```cpp
+process cat{"cat"};
+process wc{"wc", "-c"};
+
+// OPTION 1: same limits for all processes in the pipeline
+process::limits_t limits;
+limits.cpu_time(3);         // 3 second execution time limit
+limits.memory(1024*1024*1); // 1 MB memory usage limit
+(cat | wc).limit(limits).exec();
+
+// OPTION 2: individual limits for each process
+process::limits_t limits;
+limits.cpu_time(3);         // 3 second execution time limit
+limits.memory(1024*1024*1); // 1 MB memory usage limit
+wc.limit(limits);
+
+process::limits_t limits;
+limits.cpu_time(1);  // 1 second execution time limit
+limits.memory(1024); // 1 KB memory usage limit
+cat.limit(limits);
+
+(cat | wc).exec();
 ```

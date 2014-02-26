@@ -17,16 +17,15 @@ process wc{"wc", "-c"};
 (cat | wc).exec();
 
 // write "hello world" to the standard input of the cat child process
-cat.write("hello world", 11);
+cat << "hello world";
 
 // close the write end (stdin) of the cat child
 cat.close(pipe_t::write_end());
 
-// read from the `wc -l` process's stdout
-char buf[101];
-auto bytes = wc.read(buf, 100);
-buf[bytes] = '\0';
-std::cout << buf;
+// read from the `wc -l` process's stdout, line by line
+std::string line;
+while (std::getline(child.output(), line))
+    std::cout << line << std::endl;
 ```
 
 procxx also provides functionality for setting resource limits on the

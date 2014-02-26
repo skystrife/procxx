@@ -10,7 +10,6 @@
 #ifndef _PROCESS_H_
 #define _PROCESS_H_
 
-#include <errno.h>
 #include <sys/resource.h>
 #include <sys/time.h>
 #include <sys/wait.h>
@@ -18,7 +17,12 @@
 
 #include <array>
 #include <cstdio>
+#include <cstring>
+#include <cerrno>
+#include <istream>
+#include <ostream>
 #include <stdexcept>
+#include <streambuf>
 #include <string>
 #include <vector>
 
@@ -165,6 +169,14 @@ class pipe_t
     }
 
     /**
+     * Determines if an end of the pipe is still open.
+     */
+    bool open(pipe_end end)
+    {
+        return pipe_[end] != -1;
+    }
+
+    /**
      * Redirects the given file descriptor to the given end of the pipe.
      *
      * @param end the end of the pipe to connect to the file descriptor
@@ -214,6 +226,144 @@ class pipe_t
 };
 
 /**
+ * Streambuf for reading/writing to pipes.
+ *
+ * @see http://www.mr-edd.co.uk/blog/beginners_guide_streambuf
+ */
+class pipe_streambuf : public std::streambuf
+{
+  public:
+    /**
+     * Constructs a new streambuf, with the given buffer size and put_back
+     * buffer space.
+     */
+    pipe_streambuf(size_t buffer_size = 512, size_t put_back_size = 8)
+        : put_back_size_{put_back_size},
+          in_buffer_(buffer_size + put_back_size),
+          out_buffer_(buffer_size + 1)
+    {
+        auto end = &in_buffer_.back() + 1;
+        setg(end, end, end);
+
+        auto begin = &out_buffer_.front();
+        setp(begin, begin + out_buffer_.size() - 1);
+    }
+
+    /**
+     * Destroys the streambuf, which will flush any remaining content on
+     * the output buffer.
+     */
+    ~pipe_streambuf()
+    {
+        flush();
+    }
+
+    int_type underflow() override
+    {
+        // if the buffer is not exhausted, return the next element
+        if (gptr() < egptr())
+            return traits_type::to_int_type(*gptr());
+
+        auto base = &in_buffer_.front();
+        auto start = base;
+
+        // if we are not the first fill of the buffer
+        if (eback() == base)
+        {
+            // move the put_back area to the front
+            std::memmove(base, egptr() - put_back_size_, put_back_size_);
+            start += put_back_size_;
+        }
+
+        // start now points to the head of the usable area of the buffer
+        auto bytes =
+            stdout_pipe_.read(start, in_buffer_.size() - (start - base));
+        if (bytes == 0)
+            return traits_type::eof();
+
+        setg(base, start, start + bytes);
+
+        return traits_type::to_int_type(*gptr());
+    }
+
+    int_type overflow(int_type ch) override
+    {
+        if (ch != traits_type::eof())
+        {
+            *pptr() = ch; // safe because of -1 in setp() in ctor
+            pbump(1);
+            flush();
+            return ch;
+        }
+
+        return traits_type::eof();
+    }
+
+    int sync() override
+    {
+        flush();
+        return 0;
+    }
+
+    /**
+     * An exception for pipe_streambuf interactions.
+     */
+    class exception : public std::runtime_error
+    {
+      public:
+        using std::runtime_error::runtime_error;
+    };
+
+    /**
+     * Gets the stdin pipe.
+     */
+    pipe_t& stdin_pipe()
+    {
+        return stdin_pipe_;
+    }
+
+    /**
+     * Gets the stdout pipe.
+     */
+    pipe_t& stdout_pipe()
+    {
+        return stdout_pipe_;
+    }
+
+    /**
+     * Closes one of the pipes. This will flush any remaining bytes in the
+     * output buffer.
+     */
+    void close(pipe_t::pipe_end end)
+    {
+        if (end == pipe_t::read_end())
+            stdout_pipe().close(pipe_t::read_end());
+        else
+        {
+            flush();
+            stdin_pipe().close(pipe_t::write_end());
+        }
+    }
+
+  private:
+    void flush()
+    {
+        if (stdin_pipe_.open(pipe_t::write_end()))
+        {
+            stdin_pipe_.write(pbase(), pptr() - pbase());
+            pbump(-(pptr() - pbase()));
+        }
+    }
+
+    pipe_t stdin_pipe_;
+    pipe_t stdout_pipe_;
+    size_t put_back_size_;
+    std::vector<char> in_buffer_;
+    std::vector<char> out_buffer_;
+};
+
+
+/**
  * A handle that represents a child process.
  */
 class process
@@ -225,7 +375,9 @@ class process
      */
     template <class... Args>
     process(std::string&& application, Args&&... args)
-        : args_{std::move(application), std::forward<Args>(args)...}
+        : args_{std::move(application), std::forward<Args>(args)...},
+          out_stream_{&pipe_buf_},
+          in_stream_{&pipe_buf_}
     {
         // nothing
     }
@@ -255,19 +407,20 @@ class process
         }
         else if (pid == 0)
         {
-            stdin_.close(pipe_t::write_end());
-            stdout_.close(pipe_t::read_end());
-            stdout_.dup(pipe_t::write_end(), STDOUT_FILENO);
+            pipe_buf_.stdin_pipe().close(pipe_t::write_end());
+            pipe_buf_.stdout_pipe().close(pipe_t::read_end());
+            pipe_buf_.stdout_pipe().dup(pipe_t::write_end(), STDOUT_FILENO);
 
             if (read_from_)
             {
                 read_from_->recursive_close_stdin();
-                stdin_.close(pipe_t::read_end());
-                read_from_->stdout_.dup(pipe_t::read_end(), STDIN_FILENO);
+                pipe_buf_.stdin_pipe().close(pipe_t::read_end());
+                read_from_->pipe_buf_.stdout_pipe().dup(pipe_t::read_end(),
+                                                        STDIN_FILENO);
             }
             else
             {
-                stdin_.dup(pipe_t::read_end(), STDIN_FILENO);
+                pipe_buf_.stdin_pipe().dup(pipe_t::read_end(), STDIN_FILENO);
             }
 
             std::vector<char*> args;
@@ -282,12 +435,12 @@ class process
         }
         else
         {
-            stdout_.close(pipe_t::write_end());
-            stdin_.close(pipe_t::read_end());
+            pipe_buf_.stdout_pipe().close(pipe_t::write_end());
+            pipe_buf_.stdin_pipe().close(pipe_t::read_end());
             if (read_from_)
             {
-                stdin_.close(pipe_t::write_end());
-                read_from_->stdout_.close(pipe_t::read_end());
+                pipe_buf_.stdin_pipe().close(pipe_t::write_end());
+                read_from_->pipe_buf_.stdout_pipe().close(pipe_t::read_end());
             }
             pid_ = pid;
         }
@@ -425,36 +578,45 @@ class process
     }
 
     /**
-     * Writes to the standard input for the child process.
-     *
-     * @param buf the buffer to extract bytes from
-     * @param length the number of bytes to write
-     */
-    void write(const char* buf, uint64_t length)
-    {
-        stdin_.write(buf, length);
-    }
-
-    /**
-     * Reads up to length bytes into buf from the standard output of
-     * the child process.
-     *
-     * @return the number of bytes read
-     */
-    ssize_t read(char* buf, uint64_t length)
-    {
-        return stdout_.read(buf, length);
-    }
-
-    /**
      * Closes the given end of the pipe.
      */
     void close(pipe_t::pipe_end end)
     {
-        if (end == pipe_t::read_end())
-            stdout_.close(pipe_t::read_end());
-        else
-            stdin_.close(pipe_t::write_end());
+        pipe_buf_.close(end);
+    }
+
+    /**
+     * Write operator.
+     */
+    template <class T>
+    friend std::ostream& operator<<(process& proc, T&& input)
+    {
+        return proc.in_stream_ << input;
+    }
+
+    /**
+     * Conversion to std::ostream.
+     */
+    std::ostream& input()
+    {
+        return in_stream_;
+    }
+
+    /**
+     * Conversion to std::istream.
+     */
+    std::istream& output()
+    {
+        return out_stream_;
+    }
+
+    /**
+     * Read operator.
+     */
+    template <class T>
+    friend std::istream& operator>>(process& proc, T& output)
+    {
+        return proc.out_stream_ >> output;
     }
 
     /**
@@ -471,7 +633,7 @@ class process
 
     void recursive_close_stdin()
     {
-        stdin_.close();
+        pipe_buf_.stdin_pipe().close();
         if (read_from_)
             read_from_->recursive_close_stdin();
     }
@@ -480,8 +642,9 @@ class process
     process* read_from_ = nullptr;
     limits_t limits_;
     pid_t pid_ = -1;
-    pipe_t stdin_;
-    pipe_t stdout_;
+    pipe_streambuf pipe_buf_;
+    std::istream out_stream_;
+    std::ostream in_stream_;
     bool waited_ = false;
     int status_;
 };
@@ -578,5 +741,4 @@ inline pipeline operator|(process& first, process& second)
     p | second;
     return std::move(p);
 }
-
 #endif

@@ -529,6 +529,7 @@ class process
     {
         if (!waited_)
         {
+            pipe_buf_.close(pipe_t::write_end());
             waitpid(pid_, &status_, 0);
             waited_ = true;
         }

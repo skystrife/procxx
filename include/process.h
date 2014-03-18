@@ -14,17 +14,23 @@
 #include <sys/time.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <fcntl.h>
 
 #include <array>
 #include <cstdio>
 #include <cstring>
 #include <cerrno>
 #include <istream>
+#include <mutex>
 #include <ostream>
 #include <stdexcept>
 #include <streambuf>
 #include <string>
 #include <vector>
+
+#ifndef PROCXX_HAS_PIPE2
+#define PROCXX_HAS_PIPE2 1
+#endif
 
 /**
  * Represents a UNIX pipe between processes.
@@ -89,7 +95,19 @@ class pipe_t
      */
     pipe_t()
     {
+#if PROCXX_HAS_PIPE2
+        ::pipe2(&pipe_[0], O_CLOEXEC);
+#else
+        static std::mutex mutex;
+        std::lock_guard<std::mutex> lock{mutex};
         ::pipe(&pipe_[0]);
+
+        auto flags = ::fcntl(pipe_[0], F_GETFD, 0);
+        ::fcntl(pipe_[0], F_SETFD, flags | FD_CLOEXEC);
+
+        flags = ::fcntl(pipe_[1], F_GETFD, 0);
+        ::fcntl(pipe_[1], F_SETFD, flags | FD_CLOEXEC);
+#endif
     }
 
     /**
@@ -184,7 +202,7 @@ class pipe_t
      */
     void dup(pipe_end end, int fd)
     {
-        if (dup2(pipe_[end], fd) == -1)
+        if (::dup2(pipe_[end], fd) == -1)
         {
             perror("pipe_t::dup()");
             throw exception{"failed to dup"};

@@ -380,7 +380,6 @@ class pipe_streambuf : public std::streambuf
     std::vector<char> out_buffer_;
 };
 
-
 /**
  * A handle that represents a child process.
  */
@@ -443,7 +442,7 @@ class process
 
             std::vector<char*> args;
             args.reserve(args_.size() + 1);
-            for (auto& arg: args_)
+            for (auto& arg : args_)
                 args.push_back(const_cast<char*>(arg.c_str()));
             args.push_back(nullptr);
 
@@ -525,6 +524,7 @@ class process
                 throw exception{"Failed to set memory limit"};
             }
         }
+
       private:
         bool lim_cpu_ = false;
         rlimit cpu_;
@@ -558,7 +558,8 @@ class process
      */
     bool exited() const
     {
-        if (!waited_) throw exception{"process::wait() not yet called"};
+        if (!waited_)
+            throw exception{"process::wait() not yet called"};
         return WIFEXITED(status_);
     }
 
@@ -567,7 +568,8 @@ class process
      */
     bool killed() const
     {
-        if (!waited_) throw exception{"process::wait() not yet called"};
+        if (!waited_)
+            throw exception{"process::wait() not yet called"};
         return WIFSIGNALED(status_);
     }
 
@@ -576,7 +578,8 @@ class process
      */
     bool stopped() const
     {
-        if (!waited_) throw exception{"process::wait() not yet called"};
+        if (!waited_)
+            throw exception{"process::wait() not yet called"};
         return WIFSTOPPED(status_);
     }
 
@@ -586,7 +589,8 @@ class process
      */
     int code() const
     {
-        if (!waited_) throw exception{"process::wait() not yet called"};
+        if (!waited_)
+            throw exception{"process::wait() not yet called"};
         if (exited())
             return WEXITSTATUS(status_);
         if (killed())
@@ -649,7 +653,6 @@ class process
     };
 
   private:
-
     void recursive_close_stdin()
     {
         pipe_buf_.stdin_pipe().close();
@@ -704,7 +707,8 @@ class pipeline
      */
     void exec() const
     {
-        for_each([](process& proc) { proc.exec(); });
+        for_each([](process& proc)
+        { proc.exec(); });
     }
 
     /**
@@ -728,7 +732,8 @@ class pipeline
      */
     void wait() const
     {
-        for_each([](process& proc) { proc.wait(); });
+        for_each([](process& proc)
+        { proc.wait(); });
     }
 
     /**
@@ -742,8 +747,7 @@ class pipeline
     }
 
   private:
-    pipeline(process& head)
-        : processes_{&head}
+    pipeline(process& head) : processes_{&head}
     {
         // nothing
     }

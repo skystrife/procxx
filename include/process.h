@@ -448,7 +448,11 @@ class process
 
             limits_.set_limits();
             execvp(args[0], args.data());
-            throw exception{"Failed to execute child process"};
+
+            std::string mesg = "Failed to execute child process";
+            for (const auto& str : args_)
+                mesg += " " + str;
+            throw exception{mesg};
         }
         else
         {

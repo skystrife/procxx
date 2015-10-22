@@ -297,8 +297,8 @@ class pipe_streambuf : public std::streambuf
         }
 
         // start now points to the head of the usable area of the buffer
-        auto bytes =
-            stdout_pipe_.read(start, in_buffer_.size() - (start - base));
+        auto bytes
+            = stdout_pipe_.read(start, in_buffer_.size() - (start - base));
         if (bytes == 0)
             return traits_type::eof();
 
@@ -715,7 +715,9 @@ class pipeline
     void exec() const
     {
         for_each([](process& proc)
-        { proc.exec(); });
+                 {
+                     proc.exec();
+                 });
     }
 
     /**
@@ -740,7 +742,9 @@ class pipeline
     void wait() const
     {
         for_each([](process& proc)
-        { proc.wait(); });
+                 {
+                     proc.wait();
+                 });
     }
 
     /**

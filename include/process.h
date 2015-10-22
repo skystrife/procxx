@@ -32,6 +32,9 @@
 #define PROCXX_HAS_PIPE2 1
 #endif
 
+namespace procxx
+{
+
 /**
  * Represents a UNIX pipe between processes.
  */
@@ -766,5 +769,6 @@ inline pipeline operator|(process& first, process& second)
 {
     pipeline p{first};
     return p | second;
+}
 }
 #endif

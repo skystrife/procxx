@@ -765,7 +765,6 @@ class pipeline
 inline pipeline operator|(process& first, process& second)
 {
     pipeline p{first};
-    p | second;
-    return std::move(p);
+    return p | second;
 }
 #endif

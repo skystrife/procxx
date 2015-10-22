@@ -7,8 +7,8 @@
  * Released under the MIT license (see LICENSE).
  */
 
-#ifndef _PROCESS_H_
-#define _PROCESS_H_
+#ifndef PROCXX_PROCESS_H_
+#define PROCXX_PROCESS_H_
 
 #include <sys/resource.h>
 #include <sys/time.h>

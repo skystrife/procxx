@@ -17,9 +17,10 @@
 #include <fcntl.h>
 
 #include <array>
+#include <cerrno>
 #include <cstdio>
 #include <cstring>
-#include <cerrno>
+#include <functional>
 #include <istream>
 #include <mutex>
 #include <ostream>
@@ -694,8 +695,8 @@ class pipeline
      */
     pipeline& operator|(process& tail)
     {
-        tail.read_from(*processes_.back());
-        processes_.push_back(&tail);
+        tail.read_from(processes_.back());
+        processes_.emplace_back(tail);
         return *this;
     }
 
@@ -704,8 +705,9 @@ class pipeline
      */
     pipeline& limit(process::limits_t limits)
     {
-        for (auto& proc : processes_)
-            proc->limit(limits);
+        for_each([limits](process& p) {
+            p.limit(limits);
+        });
         return *this;
     }
 
@@ -725,7 +727,7 @@ class pipeline
      */
     process& head() const
     {
-        return *processes_.front();
+        return processes_.front();
     }
 
     /**
@@ -733,7 +735,7 @@ class pipeline
      */
     process& tail() const
     {
-        return *processes_.back();
+        return processes_.back();
     }
 
     /**
@@ -754,16 +756,17 @@ class pipeline
     void for_each(Function&& function) const
     {
         for (auto& proc : processes_)
-            function(*proc);
+            function(proc.get());
     }
 
   private:
-    pipeline(process& head) : processes_{&head}
+    explicit
+    pipeline(process& head) : processes_{std::ref(head)}
     {
         // nothing
     }
 
-    std::vector<process*> processes_;
+    std::vector<std::reference_wrapper<process>> processes_;
 };
 
 /**

@@ -705,9 +705,10 @@ class pipeline
      */
     pipeline& limit(process::limits_t limits)
     {
-        for_each([limits](process& p) {
-            p.limit(limits);
-        });
+        for_each([limits](process& p)
+                 {
+                     p.limit(limits);
+                 });
         return *this;
     }
 
@@ -760,8 +761,7 @@ class pipeline
     }
 
   private:
-    explicit
-    pipeline(process& head) : processes_{std::ref(head)}
+    explicit pipeline(process& head) : processes_{std::ref(head)}
     {
         // nothing
     }

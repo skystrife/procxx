@@ -19,6 +19,7 @@
 #include <array>
 #include <cerrno>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <functional>
 #include <istream>
@@ -27,6 +28,7 @@
 #include <stdexcept>
 #include <streambuf>
 #include <string>
+#include <system_error>
 #include <vector>
 
 #ifndef PROCXX_HAS_PIPE2
@@ -161,11 +163,6 @@ class pipe_t
     ssize_t read(char* buf, uint64_t length)
     {
         auto bytes = ::read(pipe_[READ_END], buf, length);
-        if (bytes == -1)
-        {
-            perror("pipe_t::read()");
-            throw exception{"failed to read"};
-        }
         return bytes;
     }
 
@@ -300,6 +297,13 @@ class pipe_streambuf : public std::streambuf
         // start now points to the head of the usable area of the buffer
         auto bytes
             = stdout_pipe_.read(start, in_buffer_.size() - (start - base));
+
+        if (bytes == -1)
+        {
+            ::perror("read");
+            throw exception{"failed to read from pipe"};
+        }
+
         if (bytes == 0)
             return traits_type::eof();
 
@@ -420,6 +424,8 @@ class process
         if (pid_ != -1)
             throw exception{"process already started"};
 
+        pipe_t err_pipe;
+
         auto pid = fork();
         if (pid == -1)
         {
@@ -428,6 +434,7 @@ class process
         }
         else if (pid == 0)
         {
+            err_pipe.close(pipe_t::read_end());
             pipe_buf_.stdin_pipe().close(pipe_t::write_end());
             pipe_buf_.stdout_pipe().close(pipe_t::read_end());
             pipe_buf_.stdout_pipe().dup(pipe_t::write_end(), STDOUT_FILENO);
@@ -453,13 +460,15 @@ class process
             limits_.set_limits();
             execvp(args[0], args.data());
 
-            std::string mesg = "Failed to execute child process";
-            for (const auto& str : args_)
-                mesg += " " + str;
-            throw exception{mesg};
+            char err[sizeof(int)];
+            std::memcpy(err, &errno, sizeof(int));
+            err_pipe.write(err, sizeof(int));
+            err_pipe.close();
+            std::_Exit(EXIT_FAILURE);
         }
         else
         {
+            err_pipe.close(pipe_t::write_end());
             pipe_buf_.stdout_pipe().close(pipe_t::write_end());
             pipe_buf_.stdin_pipe().close(pipe_t::read_end());
             if (read_from_)
@@ -468,6 +477,20 @@ class process
                 read_from_->pipe_buf_.stdout_pipe().close(pipe_t::read_end());
             }
             pid_ = pid;
+
+            char err[sizeof(int)];
+            auto bytes = err_pipe.read(err, sizeof(int));
+            if (bytes == sizeof(int))
+            {
+                int ec = 0;
+                std::memcpy(&ec, err, sizeof(int));
+                throw exception{"Failed to exec process: "
+                                + std::system_category().message(ec)};
+            }
+            else
+            {
+                err_pipe.close();
+            }
         }
     }
 

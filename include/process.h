@@ -279,7 +279,10 @@ class pipe_ostreambuf : public std::streambuf
         if (eback() == base)
         {
             // move the put_back area to the front
-            std::memmove(base, egptr() - put_back_size_, put_back_size_);
+            const auto dest = base;
+            const auto src  = egptr() - put_back_size_ < dest ? dest : egptr() - put_back_size_;
+            const auto area = egptr() - dest < put_back_size_ ? egptr() - dest : put_back_size_;
+            std::memmove(dest, src, area);
             start += put_back_size_;
         }
 

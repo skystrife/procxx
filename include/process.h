@@ -249,33 +249,22 @@ class pipe_t
  *
  * @see http://www.mr-edd.co.uk/blog/beginners_guide_streambuf
  */
-class pipe_streambuf : public std::streambuf
+class pipe_ostreambuf : public std::streambuf
 {
   public:
     /**
      * Constructs a new streambuf, with the given buffer size and put_back
      * buffer space.
      */
-    pipe_streambuf(size_t buffer_size = 512, size_t put_back_size = 8)
+    pipe_ostreambuf(size_t buffer_size = 512, size_t put_back_size = 8)
         : put_back_size_{put_back_size},
-          in_buffer_(buffer_size + put_back_size),
-          out_buffer_(buffer_size + 1)
+          in_buffer_(buffer_size + put_back_size)
     {
         auto end = &in_buffer_.back() + 1;
         setg(end, end, end);
-
-        auto begin = &out_buffer_.front();
-        setp(begin, begin + out_buffer_.size() - 1);
     }
 
-    /**
-     * Destroys the streambuf, which will flush any remaining content on
-     * the output buffer.
-     */
-    ~pipe_streambuf()
-    {
-        flush();
-    }
+    ~pipe_ostreambuf() = default;
 
     int_type underflow() override
     {
@@ -312,6 +301,63 @@ class pipe_streambuf : public std::streambuf
         return traits_type::to_int_type(*gptr());
     }
 
+    /**
+     * An exception for pipe_streambuf interactions.
+     */
+    class exception : public std::runtime_error
+    {
+      public:
+        using std::runtime_error::runtime_error;
+    };
+
+    /**
+     * Gets the stdout pipe.
+     */
+    pipe_t& stdout_pipe()
+    {
+        return stdout_pipe_;
+    }
+
+    /**
+     * Closes one of the pipes. This will flush any remaining bytes in the
+     * output buffer.
+     */
+    virtual void close(pipe_t::pipe_end end)
+    {
+        if (end == pipe_t::read_end())
+            stdout_pipe().close(pipe_t::read_end());
+    }
+
+  protected:
+    virtual void flush() { }
+
+    size_t put_back_size_;
+    pipe_t stdout_pipe_;
+    std::vector<char> in_buffer_;
+};
+
+class pipe_streambuf : public pipe_ostreambuf
+{
+  public:
+
+    pipe_streambuf(size_t buffer_size = 512, size_t put_back_size = 8)
+        : pipe_ostreambuf{buffer_size, put_back_size},
+          out_buffer_(buffer_size + 1)
+    {
+        auto begin = &out_buffer_.front();
+        setp(begin, begin + out_buffer_.size() - 1);
+    }
+
+
+    /**
+     * Destroys the streambuf, which will flush any remaining content on
+     * the output buffer.
+     */
+    ~pipe_streambuf()
+    {
+        flush();
+    }
+
     int_type overflow(int_type ch) override
     {
         if (ch != traits_type::eof())
@@ -332,15 +378,6 @@ class pipe_streambuf : public std::streambuf
     }
 
     /**
-     * An exception for pipe_streambuf interactions.
-     */
-    class exception : public std::runtime_error
-    {
-      public:
-        using std::runtime_error::runtime_error;
-    };
-
-    /**
      * Gets the stdin pipe.
      */
     pipe_t& stdin_pipe()
@@ -348,23 +385,10 @@ class pipe_streambuf : public std::streambuf
         return stdin_pipe_;
     }
 
-    /**
-     * Gets the stdout pipe.
-     */
-    pipe_t& stdout_pipe()
+    void close(pipe_t::pipe_end end) override
     {
-        return stdout_pipe_;
-    }
-
-    /**
-     * Closes one of the pipes. This will flush any remaining bytes in the
-     * output buffer.
-     */
-    void close(pipe_t::pipe_end end)
-    {
-        if (end == pipe_t::read_end())
-            stdout_pipe().close(pipe_t::read_end());
-        else
+        pipe_ostreambuf::close(end);
+        if (end != pipe_t::read_end())
         {
             flush();
             stdin_pipe().close(pipe_t::write_end());
@@ -372,7 +396,7 @@ class pipe_streambuf : public std::streambuf
     }
 
   private:
-    void flush()
+    void flush() override
     {
         if (stdin_pipe_.open(pipe_t::write_end()))
         {
@@ -382,9 +406,6 @@ class pipe_streambuf : public std::streambuf
     }
 
     pipe_t stdin_pipe_;
-    pipe_t stdout_pipe_;
-    size_t put_back_size_;
-    std::vector<char> in_buffer_;
     std::vector<char> out_buffer_;
 };
 
@@ -401,8 +422,9 @@ class process
     template <class... Args>
     process(std::string&& application, Args&&... args)
         : args_{std::move(application), std::forward<Args>(args)...},
+          in_stream_{&pipe_buf_},
           out_stream_{&pipe_buf_},
-          in_stream_{&pipe_buf_}
+          err_stream_{&err_buf_}
     {
         // nothing
     }
@@ -438,6 +460,8 @@ class process
             pipe_buf_.stdin_pipe().close(pipe_t::write_end());
             pipe_buf_.stdout_pipe().close(pipe_t::read_end());
             pipe_buf_.stdout_pipe().dup(pipe_t::write_end(), STDOUT_FILENO);
+            err_buf_.stdout_pipe().close(pipe_t::read_end());
+            err_buf_.stdout_pipe().dup(pipe_t::write_end(), STDERR_FILENO);
 
             if (read_from_)
             {
@@ -470,11 +494,13 @@ class process
         {
             err_pipe.close(pipe_t::write_end());
             pipe_buf_.stdout_pipe().close(pipe_t::write_end());
+            err_buf_.stdout_pipe().close(pipe_t::write_end());
             pipe_buf_.stdin_pipe().close(pipe_t::read_end());
             if (read_from_)
             {
                 pipe_buf_.stdin_pipe().close(pipe_t::write_end());
                 read_from_->pipe_buf_.stdout_pipe().close(pipe_t::read_end());
+                read_from_->err_buf_.stdout_pipe().close(pipe_t::read_end());
             }
             pid_ = pid;
 
@@ -579,6 +605,7 @@ class process
         if (!waited_)
         {
             pipe_buf_.close(pipe_t::write_end());
+            err_buf_.close(pipe_t::write_end());
             waitpid(pid_, &status_, 0);
             waited_ = true;
         }
@@ -637,6 +664,7 @@ class process
     void close(pipe_t::pipe_end end)
     {
         pipe_buf_.close(end);
+        err_buf_.close(end);
     }
 
     /**
@@ -651,7 +679,7 @@ class process
     /**
      * Conversion to std::ostream.
      */
-    std::ostream& input()
+    std::ostream& stdin()
     {
         return in_stream_;
     }
@@ -659,9 +687,17 @@ class process
     /**
      * Conversion to std::istream.
      */
-    std::istream& output()
+    std::istream& stdout()
     {
         return out_stream_;
+    }
+
+    /**
+     * Conversion to std::istream.
+     */
+    std::istream& stderr()
+    {
+        return err_stream_;
     }
 
     /**
@@ -696,8 +732,10 @@ class process
     limits_t limits_;
     pid_t pid_ = -1;
     pipe_streambuf pipe_buf_;
-    std::istream out_stream_;
+    pipe_ostreambuf err_buf_;
     std::ostream in_stream_;
+    std::istream out_stream_;
+    std::istream err_stream_;
     bool waited_ = false;
     int status_;
 };

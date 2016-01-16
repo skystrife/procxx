@@ -679,7 +679,7 @@ class process
     /**
      * Conversion to std::ostream.
      */
-    std::ostream& stdin()
+    std::ostream& input()
     {
         return in_stream_;
     }
@@ -687,7 +687,7 @@ class process
     /**
      * Conversion to std::istream.
      */
-    std::istream& stdout()
+    std::istream& output()
     {
         return out_stream_;
     }
@@ -695,7 +695,7 @@ class process
     /**
      * Conversion to std::istream.
      */
-    std::istream& stderr()
+    std::istream& error()
     {
         return err_stream_;
     }

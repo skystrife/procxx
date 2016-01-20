@@ -545,7 +545,7 @@ class process
     /**
      A* Gets the process id.
      */
-    pid_t id()
+    pid_t id() const
     {
         return pid_;
     }
@@ -625,7 +625,7 @@ class process
     /**
      * Determines if process is running (zombies are seen as running).
      */
-    bool running()
+    bool running() const
     {
         if (pid_ == -1)
             return false;

@@ -543,6 +543,14 @@ class process
     }
 
     /**
+     A* Gets the process id.
+     */
+    pid_t id()
+    {
+        return pid_;
+    }
+
+    /**
      * Simple wrapper for process limit settings. Currently supports
      * setting processing time and memory usage limits.
      */
@@ -612,6 +620,20 @@ class process
             waitpid(pid_, &status_, 0);
             waited_ = true;
         }
+    }
+
+    /**
+     * Determines if process is running (zombies are seen as running).
+     */
+    bool running()
+    {
+        if (pid_ == -1)
+            return false;
+
+        if (kill(pid_, 0) == 0)
+            return true;
+        else
+            return false;
     }
 
     /**

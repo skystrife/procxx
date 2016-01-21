@@ -543,7 +543,7 @@ class process
     }
 
     /**
-     A* Gets the process id.
+     * Gets the process id.
      */
     pid_t id() const
     {
@@ -630,10 +630,7 @@ class process
         if (pid_ == -1)
             return false;
 
-        if (kill(pid_, 0) == 0)
-            return true;
-        else
-            return false;
+        return ::kill(pid_, 0) == 0;
     }
 
     /**

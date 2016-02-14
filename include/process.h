@@ -365,7 +365,7 @@ class pipe_streambuf : public pipe_ostreambuf
     {
         if (ch != traits_type::eof())
         {
-            *pptr() = ch; // safe because of -1 in setp() in ctor
+            *pptr() = static_cast<char>(ch); // safe because of -1 in setp() in ctor
             pbump(1);
             flush();
             return ch;
@@ -404,7 +404,7 @@ class pipe_streambuf : public pipe_ostreambuf
         if (stdin_pipe_.open(pipe_t::write_end()))
         {
             stdin_pipe_.write(pbase(), pptr() - pbase());
-            pbump(-(pptr() - pbase()));
+            pbump(static_cast<int>(-(pptr() - pbase())));
         }
     }
 

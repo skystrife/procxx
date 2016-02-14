@@ -432,6 +432,21 @@ class process
         // nothing
     }
 
+    /*
+     * Adds an argument to the argument-list
+     */
+    void add_argument(std::string arg) {
+        args_.push_back(std::move(arg));
+    }
+
+    /*
+     * Add further arguments to the argument-list
+     */
+    template<typename InputIterator>
+    void append_arguments(InputIterator first, InputIterator last) {
+        args_.emplace(args_.end(), first, last);
+    }
+
     /**
      * Sets the process to read from the standard output of another
      * process.

@@ -281,7 +281,7 @@ class pipe_ostreambuf : public std::streambuf
             // move the put_back area to the front
             const auto dest = base;
             const auto src  = egptr() - put_back_size_ < dest ? dest : egptr() - put_back_size_;
-            const auto area = egptr() - dest < put_back_size_ ? egptr() - dest : put_back_size_;
+            const auto area = static_cast<std::size_t>(egptr() - dest) < put_back_size_ ? egptr() - dest : put_back_size_;
             std::memmove(dest, src, area);
             start += put_back_size_;
         }
@@ -365,7 +365,7 @@ class pipe_streambuf : public pipe_ostreambuf
     {
         if (ch != traits_type::eof())
         {
-            *pptr() = ch; // safe because of -1 in setp() in ctor
+            *pptr() = static_cast<char>(ch); // safe because of -1 in setp() in ctor
             pbump(1);
             flush();
             return ch;
@@ -404,7 +404,7 @@ class pipe_streambuf : public pipe_ostreambuf
         if (stdin_pipe_.open(pipe_t::write_end()))
         {
             stdin_pipe_.write(pbase(), pptr() - pbase());
-            pbump(-(pptr() - pbase()));
+            pbump(static_cast<int>(-(pptr() - pbase())));
         }
     }
 
@@ -430,6 +430,21 @@ class process
           err_stream_{&err_buf_}
     {
         // nothing
+    }
+
+    /*
+     * Adds an argument to the argument-list
+     */
+    void add_argument(std::string arg) {
+        args_.push_back(std::move(arg));
+    }
+
+    /*
+     * Add further arguments to the argument-list
+     */
+    template<typename InputIterator>
+    void append_arguments(InputIterator first, InputIterator last) {
+        args_.emplace(args_.end(), first, last);
     }
 
     /**

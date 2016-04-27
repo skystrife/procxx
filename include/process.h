@@ -102,7 +102,10 @@ class pipe_t
     pipe_t()
     {
 #if PROCXX_HAS_PIPE2
-        ::pipe2(&pipe_[0], O_CLOEXEC);
+        const auto r = ::pipe2(&pipe_[0], O_CLOEXEC);
+        if (-1 == r)
+            throw exception("pipe2 failed: " +
+                std::system_category().message(errno));
 #else
         static std::mutex mutex;
         std::lock_guard<std::mutex> lock{mutex};
@@ -642,10 +645,31 @@ class process
      */
     bool running() const
     {
-        if (pid_ == -1)
-            return false;
+        bool result = false;
+        if (pid_ != -1)
+        {
+            if (0 == ::kill(pid_, 0))
+            {
+                int status;
+                const auto r = ::waitpid(pid_, &status, WNOHANG);
+                if (-1 == r)
+                {
+                    perror("waitpid()");
+                    throw exception{"Failed to check process state "
+                        "by waitpid(): "
+                        + std::system_category().message(errno)};
+                }
+                if (r == pid_)
+                    // Process has changed its state. We must detect why.
+                    result = !WIFEXITED(status) && !WIFSIGNALED(status);
+                else
+                    // No changes in the process status. It means that
+                    // process is running.
+                    result = true;
+            }
+        }
 
-        return ::kill(pid_, 0) == 0;
+        return result;
     }
 
     /**

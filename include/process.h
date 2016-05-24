@@ -644,12 +644,21 @@ class process
             pipe_buf_.close(pipe_t::write_end());
             err_buf_.close(pipe_t::write_end());
             waitpid(pid_, &status_, 0);
+            pid_ = -1;
             waited_ = true;
         }
     }
 
     /**
-     * Determines if process is running (zombies are seen as running).
+     * It wait() already called?
+     */
+    bool waited() const
+    {
+        return waited_;
+    }
+
+    /**
+     * Determines if process is running.
      */
     bool running() const
     {

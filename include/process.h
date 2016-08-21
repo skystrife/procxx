@@ -13,6 +13,7 @@
 #include <sys/resource.h>
 #include <sys/time.h>
 #include <sys/wait.h>
+#include <signal.h>
 #include <unistd.h>
 #include <fcntl.h>
 
@@ -44,8 +45,8 @@ namespace procxx
 class pipe_t
 {
   public:
-    static constexpr int READ_END = 0;
-    static constexpr int WRITE_END = 1;
+    static constexpr unsigned int READ_END = 0;
+    static constexpr unsigned int WRITE_END = 1;
 
     /**
      * Wrapper type that ensures sanity when dealing with operations on
@@ -59,7 +60,7 @@ class pipe_t
          * the end passed makes sense (e.g., is either the READ_END or the
          * WRITE_END of the pipe).
          */
-        pipe_end(int end)
+        pipe_end(unsigned int end)
         {
             if (end != READ_END && end != WRITE_END)
                 throw exception{"invalid pipe end"};
@@ -69,13 +70,13 @@ class pipe_t
         /**
          * pipe_ends are implicitly convertible to ints.
          */
-        operator int() const
+        operator unsigned int() const
         {
             return end_;
         }
 
       private:
-        int end_;
+        unsigned int end_;
     };
 
     /**
@@ -102,7 +103,10 @@ class pipe_t
     pipe_t()
     {
 #if PROCXX_HAS_PIPE2
-        ::pipe2(&pipe_[0], O_CLOEXEC);
+        const auto r = ::pipe2(&pipe_[0], O_CLOEXEC);
+        if (-1 == r)
+            throw exception("pipe2 failed: " +
+                std::system_category().message(errno));
 #else
         static std::mutex mutex;
         std::lock_guard<std::mutex> lock{mutex};
@@ -150,7 +154,7 @@ class pipe_t
             throw exception{"failed to write"};
         }
         if (bytes < static_cast<ssize_t>(length))
-            write(buf + bytes, length - bytes);
+            write(buf + bytes, length - static_cast<uint64_t>(bytes));
     }
 
     /**
@@ -281,14 +285,15 @@ class pipe_ostreambuf : public std::streambuf
             // move the put_back area to the front
             const auto dest = base;
             const auto src  = egptr() - put_back_size_ < dest ? dest : egptr() - put_back_size_;
-            const auto area = static_cast<std::size_t>(egptr() - dest) < put_back_size_ ? egptr() - dest : put_back_size_;
+            const auto area = static_cast<std::size_t>(egptr() - dest) < put_back_size_ ?
+                static_cast<std::size_t>(egptr() - dest) : put_back_size_;
             std::memmove(dest, src, area);
             start += put_back_size_;
         }
 
         // start now points to the head of the usable area of the buffer
         auto bytes
-            = stdout_pipe_.read(start, in_buffer_.size() - (start - base));
+            = stdout_pipe_.read(start, in_buffer_.size() - static_cast<std::size_t>(start - base));
 
         if (bytes == -1)
         {
@@ -403,7 +408,7 @@ class pipe_streambuf : public pipe_ostreambuf
     {
         if (stdin_pipe_.open(pipe_t::write_end()))
         {
-            stdin_pipe_.write(pbase(), pptr() - pbase());
+            stdin_pipe_.write(pbase(), static_cast<std::size_t>(pptr() - pbase()));
             pbump(static_cast<int>(-(pptr() - pbase())));
         }
     }
@@ -411,6 +416,12 @@ class pipe_streambuf : public pipe_ostreambuf
     pipe_t stdin_pipe_;
     std::vector<char> out_buffer_;
 };
+
+class process;
+
+// Forward declaration. Will be defined later.
+bool running(pid_t pid);
+bool running(const process & pr);
 
 /**
  * A handle that represents a child process.
@@ -633,19 +644,25 @@ class process
             pipe_buf_.close(pipe_t::write_end());
             err_buf_.close(pipe_t::write_end());
             waitpid(pid_, &status_, 0);
+            pid_ = -1;
             waited_ = true;
         }
     }
 
     /**
-     * Determines if process is running (zombies are seen as running).
+     * It wait() already called?
+     */
+    bool waited() const
+    {
+        return waited_;
+    }
+
+    /**
+     * Determines if process is running.
      */
     bool running() const
     {
-        if (pid_ == -1)
-            return false;
-
-        return ::kill(pid_, 0) == 0;
+        return ::procxx::running(*this);
     }
 
     /**
@@ -875,5 +892,47 @@ inline pipeline operator|(process& first, process& second)
     pipeline p{first};
     return p | second;
 }
+
+/**
+ * Determines if process is running (zombies are seen as running).
+ */
+inline bool running(pid_t pid)
+{
+    bool result = false;
+    if (pid != -1)
+    {
+        if (0 == ::kill(pid, 0))
+        {
+            int status;
+            const auto r = ::waitpid(pid, &status, WNOHANG);
+            if (-1 == r)
+            {
+                perror("waitpid()");
+                throw process::exception{"Failed to check process state "
+                    "by waitpid(): "
+                    + std::system_category().message(errno)};
+            }
+            if (r == pid)
+                // Process has changed its state. We must detect why.
+                result = !WIFEXITED(status) && !WIFSIGNALED(status);
+            else
+                // No changes in the process status. It means that
+                // process is running.
+                result = true;
+        }
+    }
+
+    return result;
 }
+
+/**
+ * Determines if process is running (zombies are seen as running).
+ */
+inline bool running(const process & pr)
+{
+    return running(pr.id());
+}
+
+}
+
 #endif

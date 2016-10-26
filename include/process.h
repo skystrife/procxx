@@ -434,7 +434,7 @@ class process
      * passing the given arguments to it.
      */
     template <class... Args>
-    process(std::string&& application, Args&&... args)
+    process(std::string application, Args&&... args)
         : args_{std::move(application), std::forward<Args>(args)...},
           in_stream_{&pipe_buf_},
           out_stream_{&pipe_buf_},
